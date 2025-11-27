@@ -1,191 +1,144 @@
-# gradio_frontend.py (适配 Gradio 3.50.2)
+# gradio_frontend.py
 import gradio as gr
 import requests
-import tempfile
 import os
 from PIL import Image
-import io
 
 # 后端服务配置
-CODEFORMER_SERVICE_URL = "http://localhost:8001/restore"
+CODEFORMER_SERVICE_URL = "http://localhost:8001"
 
 
-def restore_face(image, weight):
-    if image is None:
-        return None, "请先上传图片"
+def restore_face(input_path, weight, output_dir=None):
+    """
+    调用后端服务进行人脸修复
+    """
+    # 准备请求数据
+    data = {
+        "input_path": input_path,
+        "weight": weight
+    }
+    print(data)
+
+    if output_dir:
+        data["output_path"] = output_dir
 
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_file:
-            if hasattr(image, 'shape'):  # 判断是否为 numpy array
-                pil_image = Image.fromarray(image)
-                pil_image.save(tmp_file.name, "PNG")
-            else:
-                image.save(tmp_file.name, "PNG")
-
-            temp_path = tmp_file.name
-
-        files = {'file': open(temp_path, 'rb')}
-        data = {'weight': weight}
-
         response = requests.post(
-            CODEFORMER_SERVICE_URL,
-            files=files,
-            data=data,
-            timeout=60
+            f"{CODEFORMER_SERVICE_URL}/restore",
+            json=data
         )
 
-        if response.status_code == 200:
-            restored_image = Image.open(io.BytesIO(response.content))
+        result = response.json()
 
-            files['file'].close()
-            os.unlink(temp_path)
+        if result.get("status") == "success":
+            # 获取结果文件
+            output_file = result["output_files"]["main_result"]
+            file_response = requests.get(f"{CODEFORMER_SERVICE_URL}/result/{output_file}")
 
-            return restored_image, "修复完成!"
+            if file_response.status_code == 200:
+                # 保存结果图片
+                result_path = f"temp_result_{os.path.basename(input_path)}"
+                with open(result_path, "wb") as f:
+                    f.write(file_response.content)
+                # 压缩图片到 400x400
+                compressed_path = compress_image(result_path)
+                return compressed_path, "修复完成!"
+            else:
+                return None, "无法获取结果文件"
         else:
-            files['file'].close()
-            os.unlink(temp_path)
+            return None, f"处理失败: {result.get('error', '未知错误')}"
 
-            error_msg = f"服务返回错误: {response.status_code}"
-            try:
-                error_detail = response.json()
-                error_msg += f" - {error_detail.get('error', '未知错误')}"
-            except:
-                error_msg += f" - {response.text}"
-
-            return None, error_msg
-
-    except requests.exceptions.Timeout:
-        return None, "请求超时，请稍后重试"
-    except requests.exceptions.ConnectionError:
-        return None, f"无法连接到服务，请确保 CodeFormer 服务正在运行在 {CODEFORMER_SERVICE_URL}"
     except Exception as e:
-        if 'temp_path' in locals() and os.path.exists(temp_path):
-            os.unlink(temp_path)
-        return None, f"处理过程中发生错误: {str(e)}"
+        return None, f"请求失败: {str(e)}"
+
+
+def list_available_images():
+    """
+    获取可用的输入图片列表
+    """
+    try:
+        response = requests.get(f"{CODEFORMER_SERVICE_URL}/list_images")
+        result = response.json()
+        if "images" in result:
+            return result["absolute_paths"]
+        return []
+    except:
+        return []
 
 
 def create_demo():
+    """创建 Gradio 演示界面"""
 
-    with gr.Blocks(
-            title="AI 人脸修复平台 - CodeFormer",
-            css="""
-        .gradio-container {
-            max-width: 1000px !important;
-        }
-        .output-image {
-            border-radius: 10px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }
-        """
-    ) as demo:
-        gr.Markdown(
-            """
-            # 🎭 AI 人脸修复平台
-            ### 使用 CodeFormer 技术修复和增强人脸图片
-
-            上传图片后，调整修复强度参数，点击"开始修复"按钮即可。
-            """
-        )
+    with gr.Blocks(title="AI 人脸修复平台") as demo:
+        gr.Markdown("# 🎭 AI 人脸修复平台")
 
         with gr.Row():
-            with gr.Column(scale=1):
-                with gr.Group():
-                    gr.Markdown("### 📤 上传图片")
-                    input_image = gr.Image(
-                        label="选择图片",
-                        type="pil",
-                        height=300
-                    )
-
-                with gr.Group():
-                    gr.Markdown("### ⚙️ 参数设置")
-                    weight_slider = gr.Slider(
-                        minimum=0.0,
-                        maximum=1.0,
-                        value=0.5,
-                        step=0.1,
-                        label="修复强度 (Weight)",
-                        info="较小值(0.1-0.3): 更自然但改变较多 | 较大值(0.7-1.0): 保留更多原图特征"
-                    )
-
-                restore_btn = gr.Button(
-                    "🚀 开始修复",
-                    variant="primary"
+            with gr.Column():
+                # 图片选择
+                available_images = list_available_images()
+                print(available_images)
+                image_select = gr.Dropdown(
+                    choices=available_images,
+                    label="选择输入图片",
+                    value=available_images[0] if available_images else None
                 )
 
-                status_text = gr.Textbox(
-                    label="状态",
-                    placeholder="等待处理...",
-                    interactive=False
+                # 修复强度
+                weight_slider = gr.Slider(
+                    0.0, 1.0, 0.5, step=0.1,
+                    label="修复强度",
+                    info="较小值：更自然 | 较大值：保留原图特征"
                 )
 
-            with gr.Column(scale=1):
-                gr.Markdown("### 📥 修复结果")
-                output_image = gr.Image(
-                    label="修复后的图片",
-                    type="pil",
-                    height=400
+                # 输出目录（可选）
+                output_dir = gr.Textbox(
+                    label="输出目录（可选）",
+                    placeholder="留空使用默认目录",
+                    value=""
                 )
 
-                with gr.Row():
-                    download_btn = gr.Button("💾 下载结果")
-                    clear_btn = gr.Button("🗑️ 清空", variant="secondary")
+                restore_btn = gr.Button("🚀 开始修复", variant="primary")
+                status_text = gr.Textbox(label="状态", interactive=False)
 
-        with gr.Accordion("📖 使用说明", open=False):
-            gr.Markdown("""
-            **使用步骤:**
-            1. 上传一张包含人脸的图片（支持 PNG、JPG、JPEG 格式）
-            2. 调整修复强度参数（推荐值 0.5-0.7）
-            3. 点击"开始修复"按钮
-            4. 等待处理完成，查看并下载结果
+            with gr.Column():
+                output_image = gr.Image(label="修复结果", height=400, width=400)
 
-            **参数说明:**
-            - **修复强度 (Weight)**: 控制修复程度
-              - 较低值 (0.1-0.3): 修复效果更明显，可能改变更多原图特征
-              - 较高值 (0.7-1.0): 保留更多原图细节，修复效果较轻微
-              - 推荐值 (0.5): 平衡修复效果和保真度
-
-            **注意事项:**
-            - 确保 CodeFormer 后端服务正在运行
-            - 处理时间根据图片大小和服务器性能可能需 10-30 秒
-            - 建议图片尺寸不要过大（最好在 1024x1024 像素以内）
-            """)
-
+        # 按钮事件
         restore_btn.click(
             fn=restore_face,
-            inputs=[input_image, weight_slider],
+            inputs=[image_select, weight_slider, output_dir],
             outputs=[output_image, status_text]
         )
 
-        clear_btn.click(
-            fn=lambda: [None, None, "已清空"],
-            inputs=[],
-            outputs=[input_image, output_image, status_text]
-        )
+        # 刷新图片列表
+        refresh_btn = gr.Button("🔄 刷新图片列表")
 
-        def download_result(image):
-            if image is not None:
-                temp_dir = "downloads"
-                os.makedirs(temp_dir, exist_ok=True)
-                download_path = f"{temp_dir}/restored_result.png"
-                image.save(download_path)
-                return download_path
-            return None
-
-        download_btn.click(
-            fn=download_result,
-            inputs=[output_image],
-            outputs=gr.File(label="下载修复结果")
-        )
+        @refresh_btn.click
+        def refresh_images():
+            new_images = list_available_images()
+            new_choices = [os.path.basename(img) for img in new_images]
+            return gr.Dropdown.update(choices=new_choices, value=new_choices[0] if new_choices else None)
 
     return demo
 
 
+def compress_image(image_path):
+    """
+    将图片压缩到 400x400 像素
+    """
+    try:
+        with Image.open(image_path) as img:
+            img_resized = img.resize((400, 400), Image.Resampling.LANCZOS)
+
+            compressed_path = f"compressed_{os.path.basename(image_path)}"
+            img_resized.save(compressed_path, "PNG")
+
+            return compressed_path
+    except Exception as e:
+        print(f"图片压缩失败: {e}")
+        return image_path  # 如果压缩失败，返回原图
+
+
 if __name__ == "__main__":
     demo = create_demo()
-
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False
-    )
+    demo.launch(server_name="0.0.0.0", server_port=7860)
