@@ -1,3 +1,36 @@
-.idea
-.venv
-.model-show
+# IDE & System
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+ENV/
+
+
+# Large Model Weights
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.bin
+*.h5
+
+# Generated Results & Temp files
+gradio_temp/
+test_results/
+results/
+outputs/
+tmp/
+
+# Specific folders to ignore based on your structure
+src/**/weights/
+src/**/experiments/
+src/**/gradio_temp/
+src/**/inputs/
+src/**/results/

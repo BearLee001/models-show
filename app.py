@@ -1,144 +1,207 @@
-# gradio_frontend.py
 import gradio as gr
 import requests
 import os
-from PIL import Image
+import shutil
+import uuid
+from typing import List, Optional
 
-# 后端服务配置
-CODEFORMER_SERVICE_URL = "http://localhost:8001"
+# Define the base URLs for the backend services
+CODEFORMER_API_URL = "http://localhost:8001"
+REFLDM_API_URL = "http://localhost:8002"
+GFPGAN_API_URL = "http://localhost:8003"
 
+# Create a temporary directory for uploads if it doesn't exist
+TEMP_DIR = "gradio_temp"
+os.makedirs(TEMP_DIR, exist_ok=True)
 
-def restore_face(input_path, weight, output_dir=None):
+def process_image(
+    model: str,
+    main_image: str,
+    ref_images: Optional[List[str]],
+    weight: float,
+    cfg_scale: float,
+    upscale: int,
+    version: str,
+):
     """
-    调用后端服务进行人脸修复
+    Main function to process the image based on the selected model.
     """
-    # 准备请求数据
-    data = {
-        "input_path": input_path,
-        "weight": weight
-    }
-    print(data)
+    if not main_image:
+        raise gr.Error("Please upload a main image.")
 
-    if output_dir:
-        data["output_path"] = output_dir
+    # A unique path for this request's output
+    output_dir = os.path.join(TEMP_DIR, str(uuid.uuid4()))
+    os.makedirs(output_dir, exist_ok=True)
 
     try:
-        response = requests.post(
-            f"{CODEFORMER_SERVICE_URL}/restore",
-            json=data
-        )
-
-        result = response.json()
-
-        if result.get("status") == "success":
-            # 获取结果文件
-            output_file = result["output_files"]["main_result"]
-            file_response = requests.get(f"{CODEFORMER_SERVICE_URL}/result/{output_file}")
-
-            if file_response.status_code == 200:
-                # 保存结果图片
-                result_path = f"temp_result_{os.path.basename(input_path)}"
-                with open(result_path, "wb") as f:
-                    f.write(file_response.content)
-                # 压缩图片到 400x400
-                compressed_path = compress_image(result_path)
-                return compressed_path, "修复完成!"
+        if model == "CodeFormer":
+            # --- CodeFormer Backend Call ---
+            payload = {
+                "input_path": main_image,
+                "output_path": output_dir,
+                "weight": weight,
+            }
+            response = requests.post(f"{CODEFORMER_API_URL}/restore", json=payload)
+            response.raise_for_status()
+            result = response.json()
+            if result.get("status") == "success":
+                # Find the primary output file from the results
+                output_files = result.get("output_files", {})
+                if "main_result" in output_files:
+                    return output_files["main_result"]
+                else:
+                    raise gr.Error("CodeFormer processing succeeded, but no main output file was found.")
             else:
-                return None, "无法获取结果文件"
+                raise gr.Error(f"CodeFormer API Error: {result.get('error', 'Unknown error')}")
+
+
+        elif model == "Ref-LDM":
+            # --- Ref-LDM Backend Call ---
+            if not ref_images:
+                raise gr.Error("Ref-LDM requires at least one reference image.")
+            
+            # Convert TemporaryFileWrapper objects to file paths
+            ref_image_paths = [img.name for img in ref_images]
+
+            output_filename = os.path.join(output_dir, f"{uuid.uuid4()}.png")
+
+            payload = {
+                "lq_path": main_image,
+                "ref_paths": ref_image_paths,
+                "output_path": output_filename,
+                "cfg_scale": cfg_scale,
+            }
+            response = requests.post(f"{REFLDM_API_URL}/generate", json=payload)
+            response.raise_for_status()
+            result = response.json()
+            if result.get("status") == "success":
+                return result["output_file"]
+            else:
+                 raise gr.Error(f"Ref-LDM API Error: {result.get('detail', 'Unknown error')}")
+
+
+        elif model == "GFPGAN":
+            # --- GFPGAN Backend Call ---
+            payload = {
+                "input_path": main_image,
+                "output_path": output_dir,
+                "version": version,
+                "upscale": upscale,
+                "weight": weight,
+            }
+            response = requests.post(f"{GFPGAN_API_URL}/restore", json=payload)
+            response.raise_for_status()
+            result = response.json()
+            if result.get("status") == "success":
+                return result["output_file"]
+            else:
+                raise gr.Error(f"GFPGAN API Error: {result.get('error', 'Unknown error')}")
+
         else:
-            return None, f"处理失败: {result.get('error', '未知错误')}"
+            raise gr.Error(f"Unknown model: {model}")
 
+    except requests.exceptions.RequestException as e:
+        raise gr.Error(f"Failed to connect to the {model} backend. Is it running? Details: {e}")
     except Exception as e:
-        return None, f"请求失败: {str(e)}"
+        # Catch any other unexpected errors
+        raise gr.Error(f"An unexpected error occurred: {e}")
 
 
-def list_available_images():
+def on_model_change(model_choice: str):
     """
-    获取可用的输入图片列表
+    Updates the visibility of UI components based on the selected model.
     """
-    try:
-        response = requests.get(f"{CODEFORMER_SERVICE_URL}/list_images")
-        result = response.json()
-        if "images" in result:
-            return result["absolute_paths"]
-        return []
-    except:
-        return []
+    if model_choice == "Ref-LDM":
+        return {
+            ref_images_box: gr.update(visible=True),
+            gfpgan_options: gr.update(visible=False),
+            codeformer_options: gr.update(visible=False),
+            refldm_options: gr.update(visible=True),
+        }
+    elif model_choice == "GFPGAN":
+        return {
+            ref_images_box: gr.update(visible=False),
+            gfpgan_options: gr.update(visible=True),
+            codeformer_options: gr.update(visible=False),
+            refldm_options: gr.update(visible=False),
+        }
+    elif model_choice == "CodeFormer":
+        return {
+            ref_images_box: gr.update(visible=False),
+            gfpgan_options: gr.update(visible=False),
+            codeformer_options: gr.update(visible=True),
+            refldm_options: gr.update(visible=False),
+        }
+    return {
+        ref_images_box: gr.update(visible=False),
+        gfpgan_options: gr.update(visible=False),
+        codeformer_options: gr.update(visible=False),
+        refldm_options: gr.update(visible=False),
+    }
 
+# --- Gradio UI Definition ---
+with gr.Blocks(theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# Image Model Hub")
+    gr.Markdown("Select a model, upload your image(s), and see the results.")
 
-def create_demo():
-    """创建 Gradio 演示界面"""
-
-    with gr.Blocks(title="AI 人脸修复平台") as demo:
-        gr.Markdown("# 🎭 AI 人脸修复平台")
-
-        with gr.Row():
-            with gr.Column():
-                # 图片选择
-                available_images = list_available_images()
-                print(available_images)
-                image_select = gr.Dropdown(
-                    choices=available_images,
-                    label="选择输入图片",
-                    value=available_images[0] if available_images else None
+    with gr.Row():
+        with gr.Column(scale=1):
+            # Input Components
+            model_selector = gr.Dropdown(
+                ["CodeFormer", "Ref-LDM", "GFPGAN"],
+                label="Choose a Model",
+                value="CodeFormer",
+            )
+            input_image = gr.Image(type="filepath", label="Input Image")
+            
+            with gr.Box(visible=False) as ref_images_box:
+                ref_images = gr.File(
+                    label="Reference Images (for Ref-LDM)",
+                    file_count="multiple",
+                    file_types=["image"],
                 )
 
-                # 修复强度
-                weight_slider = gr.Slider(
-                    0.0, 1.0, 0.5, step=0.1,
-                    label="修复强度",
-                    info="较小值：更自然 | 较大值：保留原图特征"
-                )
+            # Model-specific options
+            with gr.Box(visible=True) as codeformer_options:
+                gr.Markdown("### CodeFormer Options")
+                cf_weight = gr.Slider(0, 1, value=0.5, label="Fidelity Weight (higher means stronger restoration)")
+            
+            with gr.Box(visible=False) as gfpgan_options:
+                gr.Markdown("### GFPGAN Options")
+                gfpgan_version = gr.Dropdown(["1.3", "1.4"], value="1.4", label="Model Version")
+                gfpgan_upscale = gr.Slider(1, 4, value=2, step=1, label="Upscale Factor")
+                gfpgan_weight = gr.Slider(0, 1, value=0.5, label="Fidelity Weight")
 
-                # 输出目录（可选）
-                output_dir = gr.Textbox(
-                    label="输出目录（可选）",
-                    placeholder="留空使用默认目录",
-                    value=""
-                )
+            with gr.Box(visible=False) as refldm_options:
+                gr.Markdown("### Ref-LDM Options")
+                refldm_cfg_scale = gr.Slider(1, 10, value=1.5, label="CFG Scale")
 
-                restore_btn = gr.Button("🚀 开始修复", variant="primary")
-                status_text = gr.Textbox(label="状态", interactive=False)
+            submit_btn = gr.Button("Process Image", variant="primary")
+        
+        with gr.Column(scale=1):
+            # Output Component
+            output_image = gr.Image(type="filepath", label="Output Image")
 
-            with gr.Column():
-                output_image = gr.Image(label="修复结果", height=400, width=400)
+    # Connect UI components to functions
+    model_selector.change(
+        fn=on_model_change,
+        inputs=model_selector,
+        outputs=[ref_images_box, gfpgan_options, codeformer_options, refldm_options],
+    )
 
-        # 按钮事件
-        restore_btn.click(
-            fn=restore_face,
-            inputs=[image_select, weight_slider, output_dir],
-            outputs=[output_image, status_text]
-        )
-
-        # 刷新图片列表
-        refresh_btn = gr.Button("🔄 刷新图片列表")
-
-        @refresh_btn.click
-        def refresh_images():
-            new_images = list_available_images()
-            new_choices = [os.path.basename(img) for img in new_images]
-            return gr.Dropdown.update(choices=new_choices, value=new_choices[0] if new_choices else None)
-
-    return demo
-
-
-def compress_image(image_path):
-    """
-    将图片压缩到 400x400 像素
-    """
-    try:
-        with Image.open(image_path) as img:
-            img_resized = img.resize((400, 400), Image.Resampling.LANCZOS)
-
-            compressed_path = f"compressed_{os.path.basename(image_path)}"
-            img_resized.save(compressed_path, "PNG")
-
-            return compressed_path
-    except Exception as e:
-        print(f"图片压缩失败: {e}")
-        return image_path  # 如果压缩失败，返回原图
-
+    submit_btn.click(
+        fn=process_image,
+        inputs=[
+            model_selector,
+            input_image,
+            ref_images,
+            cf_weight, # Corresponds to 'weight' param
+            refldm_cfg_scale, # Corresponds to 'cfg_scale'
+            gfpgan_upscale, # Corresponds to 'upscale'
+            gfpgan_version, # Corresponds to 'version'
+        ],
+        outputs=output_image,
+    )
 
 if __name__ == "__main__":
-    demo = create_demo()
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(share=True)
