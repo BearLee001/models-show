@@ -12,10 +12,8 @@ __pycache__/
 venv/
 ENV/
 
-# Environment Variables (敏感信息，绝对不要上传)
-.env
 
-# Large Model Weights (大文件，GitHub 限制 100MB)
+# Large Model Weights
 *.pth
 *.ckpt
 *.safetensors
@@ -33,3 +31,6 @@ tmp/
 # Specific folders to ignore based on your structure
 src/**/weights/
 src/**/experiments/
+src/**/gradio_temp/
+src/**/inputs/
+src/**/results/
