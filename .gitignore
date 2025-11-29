@@ -1,3 +1,35 @@
-.idea
-.venv
-.model-show
+# IDE & System
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+ENV/
+
+# Environment Variables (敏感信息，绝对不要上传)
+.env
+
+# Large Model Weights (大文件，GitHub 限制 100MB)
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.bin
+*.h5
+
+# Generated Results & Temp files
+gradio_temp/
+test_results/
+results/
+outputs/
+tmp/
+
+# Specific folders to ignore based on your structure
+src/**/weights/
+src/**/experiments/
